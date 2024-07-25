@@ -1,0 +1,71 @@
+name: Run tests on PR to main
+on:
+  pull_request:
+    branches: [main]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: set up nodejs
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: run tests
+        run: |
+          npm install
+          npm test
+
+  sql-migrations-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: heroku login
+        uses: akhileshns/heroku-deploy@v3.13.15 # This is the action
+        with:
+          heroku_api_key: ${{secrets.HEROKU_API_KEY_2}}
+          heroku_app_name: ${{secrets.HEROKU_APP_NAME}}
+          heroku_email: ${{secrets.HEROKU_EMAIL_2}}
+          justlogin: true
+
+      - name: get modified SQL migrations
+        id: get-migrations
+        run: |
+          set -o pipefail
+          git diff --name-only | grep 'heroku-pg/migrations/.*\up.sql$' > new_migrations.txt || true
+          if [[ -s new_migrations.txt ]]; then
+            echo "::set-output name=migrations::$(cat new_migrations.txt)"
+          else
+            echo "::set-output name=migrations::"
+          fi
+
+      - name: Deploy SQL migrations
+        if: ${{ steps.get-migrations.outputs.migrations }} != ''
+        run: |
+          while IFS= read -r file; do
+            echo "Preparing SQL migration for dry-run: $file"
+            temp_file=$(mktemp)
+            echo "BEGIN;" > $temp_file
+            cat "$file" >> $temp_file
+            echo "ROLLBACK;" >> $temp_file
+
+            # Dry-run the SQL migration and capture the output
+            echo "Dry-running SQL migration: $file"
+            output=$(heroku pg:psql -a ${{ secrets.HEROKU_APP_NAME }} -f $temp_file 2>&1)
+
+            # # Check if the output contains 'ERROR'
+            if [[ $output == *"ERROR"* ]]; then
+              echo "Error in SQL migration: $file"
+              echo "$output"
+              rm $temp_file
+              exit 1
+            else
+              echo "No errors found in $file"
+              
+            fi
+
+            # Clean up the temporary file
+            rm $temp_file
+          done < new_migrations.txt

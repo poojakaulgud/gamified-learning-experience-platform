@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+echo Starting lint-staged Husky Git Hook && npx lint-staged
+
+npm run format
+npx lint-staged
